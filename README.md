@@ -1,4 +1,4 @@
-# Linkcart
+# Product Search Platform — Linkcart
 
 Real product comparisons for Cambodia, with a manual procurement queue and test payments.
 
