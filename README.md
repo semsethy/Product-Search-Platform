@@ -32,7 +32,7 @@ The PayWay adapter signs hosted forms for `abapay_khqr` and `cards`; bank/card d
 
 `python3 -m unittest discover -s tests -v`
 
-37 tests cover extraction, model relevance, real currencies, provider errors, upload validation and metadata removal, visual match mapping, order durability and idempotency, access isolation, fulfillment transitions, and payment callback verification. A real Amazon link and mock card decline/success flow were also checked in the browser.
+39 tests cover extraction, model relevance, real currencies, provider errors, upload validation and metadata removal, visual match mapping, order durability and idempotency, access isolation, fulfillment transitions, and payment callback verification. A real Amazon link and mock card decline/success flow were also checked in the browser.
 
 ## Before public launch
 

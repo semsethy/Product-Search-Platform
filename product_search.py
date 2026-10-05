@@ -194,7 +194,8 @@ def parse_product(markup,url):
         if byline:
             brand=clean(byline.text(),100)
             brand=re.sub(r'^(?:Visit the|Brand:|ブランド[:：]?)\s*','',brand,flags=re.I)
-            brand=re.sub(r'\s+(?:Store|ストアを表示)$','',brand,flags=re.I)
+            brand=re.sub(r'(?:\s+Store|\s*の?ストアを表示)$','',brand,flags=re.I).strip()
+            if re.search(r'new balance|ニューバランス',brand,re.I):brand='New Balance'
             out['brand']=brand
         bullets=page.by_id('feature-bullets')
         if bullets:out['description']=clean(bullets.text(),1500)

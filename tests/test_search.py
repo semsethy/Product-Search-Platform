@@ -89,6 +89,11 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(len(result['offers']),2);self.assertEqual(result['offers'][0]['price_cents'],24999)
 
 class GlobalRegionTests(unittest.TestCase):
+    def test_japanese_brand_byline_does_not_pollute_search(self):
+        from product_search import search_query
+        product=parse_product('<span id="productTitle">New Balance AMJ53174 Hoodie</span><a id="bylineInfo">new balance(ニューバランス)のストアを表示</a>','https://www.amazon.co.jp/dp/B0FK4FT6XB')
+        self.assertEqual(product['brand'],'New Balance')
+        self.assertEqual(search_query(product),'New Balance AMJ53174')
     def test_every_registered_amazon_marketplace_is_allowed(self):
         from amazon_regions import MARKETPLACES,marketplace
         self.assertEqual(len(MARKETPLACES),23)
