@@ -87,6 +87,7 @@ def infer_model(title):
 def normalized(value):return re.sub(r'[^a-z0-9]','',str(value).lower())
 
 ACCESSORIES=re.compile(r'\b(?:ear\s*pads?|ear\s*cushions?|replacement\s+(?:pads?|cushions?|headbands?)|carrying\s+case|protective\s+(?:case|cover)|headphone\s+stand|compatible\s+with|for\s+sony|earpad|silicone\s+(?:case|cover)|replacement|headband\s+(?:cover|hanger)|audio\s+cable|aux\s+(?:cable|cord)|repair\s+kit|charging\s+cable|charger|cable|cord|headphone\s+cover)\b|ケース|カバー|イヤ[ー]?パッド|イヤークッション|交換|ケーブル|ヒンジ|修理|アクセサリ',re.I)
+REGIONAL_ACCESSORIES=re.compile(r'earpads?|padz|ohrpolster|ersatz(?:polster|teile)|schutzhülle|coussinets?|housse|coque|remplacement|almohadillas|funda|repuesto|cuscinetti|custodia|ricambio|nauszniki|poduszki|wymienne|zawias|etui|naprawcz|oorkussens|beschermhoes|öronkuddar|fodral|almofadas|substitui|وسادات|قطع غيار|حافظة',re.I)
 STOP={'the','with','for','and','from','this','that','wireless','premium','new','black','white','silver','buy','amazon','noise','cancelling','canceling','leading','industry','headphones','headphone','product','free','shipping'}
 
 CATEGORY_PATTERNS={
@@ -111,8 +112,11 @@ def relevance(title, source):
     model=str(source.get('model') or infer_model(source.get('title',''))).split('/')[0]
     if model:
         # Accessories mention the model but are not the same product category.
-        if ACCESSORIES.search(title) and not ACCESSORIES.search(source.get('title','')):return 0
-        if normalized(model) in normalized(title):return 2
+        if (ACCESSORIES.search(title) or REGIONAL_ACCESSORIES.search(title)) and not (ACCESSORIES.search(source.get('title','')) or REGIONAL_ACCESSORIES.search(source.get('title',''))):return 0
+        if normalized(model) in normalized(title):
+            comparison=re.search(r'(?:same .{0,30}as|same .{0,30}in|compared? (?:with|to)|alternative to|versus|\bvs\b)',title,re.I)
+            if not comparison:return 2
+            return 1 if product_category(source.get('title',''))==product_category(title) else 0
         # Nearby headphone models can be useful alternatives, but are never labeled model matches.
         category=product_category(source.get('title',''))
         if category and category==product_category(title):return 1

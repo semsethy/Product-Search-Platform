@@ -105,6 +105,10 @@ class GlobalRegionTests(unittest.TestCase):
         self.assertEqual(relevance('New Balance MT41503 Hoodie',source),1)
         self.assertEqual(relevance('New Balance running shoes',source),0)
         self.assertEqual(alternative_query(source),'New Balance sweatshirt')
+    def test_regional_accessories_and_comparison_mentions_are_not_model_matches(self):
+        for title in ['WC PadZ XM5 — nauszniki premium do Sony WH-1000XM5','Poduszki nauszne wymienne do Sony WH-1000XM5','SOULWIT Zestaw naprawczy zawiasów do Sony WH-1000XM5','Fintie twarde etui do Sony WH-1000XM5','Coussinets remplacement pour Sony WH-1000XM5','Sony WH-1000XM5 Ohrpolster Ersatzteile']:
+            self.assertEqual(relevance(title,PRODUCT),0,title)
+        self.assertEqual(relevance('Sony ULT WEAR Wireless Headphones, Same Processor as WH-1000XM5',PRODUCT),1)
     def test_region_currency_and_product_specifications(self):
         markup=AMAZON.replace('$249.99','₹19,999')+'<table id="productDetails_techSpec_section_1"><tr><th>Model</th><td>WH-1000XM5</td></tr></table><div id="variation_size_name"><select><option>Select Size</option><option>Small</option><option>Large</option></select></div>'
         product=parse_product(markup,'https://www.amazon.in/dp/B09XS7JWHH')
