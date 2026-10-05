@@ -78,7 +78,7 @@ class SearchTests(unittest.TestCase):
         with patch.object(server,'extract_product',return_value={'**unused**':0,**PRODUCT,'native_amount':None,'currency':'','native_price':'','availability':'Not confirmed','extraction':'Page metadata'}),patch.object(server,'direct_amazon_region',side_effect=ValueError('blocked')):
             result=server.live_search(PRODUCT['url'])
         self.assertFalse(result['demo']);self.assertEqual(len(result['offers']),1)
-        self.assertIsNone(result['offers'][0]['price_cents']);self.assertEqual(len(result['warnings']),4)
+        self.assertIsNone(result['offers'][0]['price_cents']);self.assertEqual(len(result['regions']),len(server.REGIONS));self.assertTrue(all(r['status']=='unavailable' for r in result['regions']))
     def test_live_search_returns_verified_original_and_real_matches(self):
         def region_results(product,region):
             if region[0]=='us':return parse_amazon_results(RESULTS,'amazon.com',region,PRODUCT)
@@ -87,5 +87,34 @@ class SearchTests(unittest.TestCase):
             result=server.live_search(PRODUCT['url'])
         self.assertFalse(result['demo']);self.assertEqual(result['offers'][0]['match'],'original product')
         self.assertEqual(len(result['offers']),2);self.assertEqual(result['offers'][0]['price_cents'],24999)
+
+class GlobalRegionTests(unittest.TestCase):
+    def test_every_registered_amazon_marketplace_is_allowed(self):
+        from amazon_regions import MARKETPLACES,marketplace
+        self.assertEqual(len(MARKETPLACES),23)
+        for region in MARKETPLACES:
+            url='https://www.'+region[4]+'/dp/B000000000'
+            self.assertEqual(server.allowed_url(url),url)
+            self.assertEqual(marketplace('www.'+region[4])[0],region[0])
+        for host in ['amazon.com.evil.com','amazon.co.kr','amazon.com.kh','amazon.vn']:
+            self.assertIsNone(marketplace(host))
+    def test_similar_apparel_is_distinguished_from_exact_model(self):
+        from product_search import alternative_query
+        source={'title':'New Balance AMJ53174 Hooded Sweatshirt','model':'AMJ53174','brand':'New Balance'}
+        self.assertEqual(relevance('New Balance AMJ53174 Hooded Sweatshirt',source),2)
+        self.assertEqual(relevance('New Balance MT41503 Hoodie',source),1)
+        self.assertEqual(relevance('New Balance running shoes',source),0)
+        self.assertEqual(alternative_query(source),'New Balance sweatshirt')
+    def test_region_currency_and_product_specifications(self):
+        markup=AMAZON.replace('$249.99','₹19,999')+'<table id="productDetails_techSpec_section_1"><tr><th>Model</th><td>WH-1000XM5</td></tr></table><div id="variation_size_name"><select><option>Select Size</option><option>Small</option><option>Large</option></select></div>'
+        product=parse_product(markup,'https://www.amazon.in/dp/B09XS7JWHH')
+        self.assertEqual(product['currency'],'INR');self.assertEqual(product['native_amount'],19999)
+        self.assertEqual(product['specifications']['Model'],'WH-1000XM5')
+        self.assertEqual(product['options']['Size'],['Small','Large'])
+        self.assertIn('30-hour battery',product['features'])
+    def test_provider_search_maps_real_offers_and_filters_unrelated(self):
+        response={'request_info':{'success':True},'search_results':[{'title':'Sony WH-1000XM5 Headphones','asin':'B09XS7JWHH','price':{'value':300,'currency':'CAD'}},{'title':'Garden chair','asin':'B000000000','price':{'value':20,'currency':'CAD'}}]}
+        with patch.object(server,'json_request',return_value=response):offers=server.rainforest_region(PRODUCT,server.REGIONS[4])
+        self.assertEqual(len(offers),1);self.assertEqual(offers[0]['region_code'],'ca');self.assertEqual(offers[0]['currency'],'CAD')
 
 if __name__=='__main__':unittest.main()

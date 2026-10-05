@@ -4,6 +4,7 @@ import json
 import math
 import re
 from html.parser import HTMLParser
+from amazon_regions import marketplace
 from urllib.parse import urljoin, urlparse, unquote
 
 class Node:
@@ -88,6 +89,24 @@ def normalized(value):return re.sub(r'[^a-z0-9]','',str(value).lower())
 ACCESSORIES=re.compile(r'\b(?:ear\s*pads?|ear\s*cushions?|replacement\s+(?:pads?|cushions?|headbands?)|carrying\s+case|protective\s+(?:case|cover)|headphone\s+stand|compatible\s+with|for\s+sony|earpad|silicone\s+(?:case|cover)|replacement|headband\s+(?:cover|hanger)|audio\s+cable|aux\s+(?:cable|cord)|repair\s+kit|charging\s+cable|charger|cable|cord|headphone\s+cover)\b|ケース|カバー|イヤ[ー]?パッド|イヤークッション|交換|ケーブル|ヒンジ|修理|アクセサリ',re.I)
 STOP={'the','with','for','and','from','this','that','wireless','premium','new','black','white','silver','buy','amazon','noise','cancelling','canceling','leading','industry','headphones','headphone','product','free','shipping'}
 
+CATEGORY_PATTERNS={
+ 'headphones':r'headphones?|ヘッドホン|ヘッドフォン',
+ 'sweatshirt':r'sweatshirt|hood(?:ie|ed)|フーディ|パーカー|スウェット',
+ 'shoes':r'sneakers?|running shoes?|スニーカー|ランニングシューズ',
+ 'camera':r'camera|カメラ', 'laptop':r'laptop|notebook computer|ノートパソコン',
+ 'watch':r'watch|腕時計', 'backpack':r'backpack|リュック',
+}
+def alternative_query(product):
+    category=product_category(product.get('title',''))
+    brand=product.get('brand','')
+    title=product.get('title','')
+    if not brand and re.search(r'new balance|ニューバランス',title,re.I):brand='New Balance'
+    if not brand and title:brand=title.split()[0]
+    return (brand+' '+category).strip() if category else ''
+
+def product_category(title):
+    return next((name for name,pattern in CATEGORY_PATTERNS.items() if re.search(pattern,title,re.I)),'')
+
 def relevance(title, source):
     model=str(source.get('model') or infer_model(source.get('title',''))).split('/')[0]
     if model:
@@ -95,7 +114,8 @@ def relevance(title, source):
         if ACCESSORIES.search(title) and not ACCESSORIES.search(source.get('title','')):return 0
         if normalized(model) in normalized(title):return 2
         # Nearby headphone models can be useful alternatives, but are never labeled model matches.
-        if re.search(r'headphones|headphone|ヘッドホン|ヘッドフォン',source.get('title',''),re.I) and re.search(r'headphones|headphone|ヘッドホン|ヘッドフォン',title,re.I):return 1
+        category=product_category(source.get('title',''))
+        if category and category==product_category(title):return 1
         return 0
     words={w for w in re.findall(r'[a-z0-9]+',source.get('title','').lower()) if len(w)>2 and w not in STOP}
     candidate=set(re.findall(r'[a-z0-9]+',title.lower()))
@@ -114,8 +134,9 @@ def search_query(product):
 
 def parse_price(text, fallback=''):
     text=clean(text)
-    currencies=[('US$','USD'),('USD','USD'),('KHR','KHR'),('£','GBP'),('GBP','GBP'),('€','EUR'),('EUR','EUR'),('￥','JPY'),('¥','JPY'),('JPY','JPY'),('A$','AUD'),('C$','CAD'),('SGD','SGD'),('$','USD')]
+    currencies=[('MX$','MXN'),('R$','BRL'),('S$','SGD'),('CA$','CAD'),('AU$','AUD'),('AED','AED'),('SAR','SAR'),('EGP','EGP'),('ZAR','ZAR'),('SEK','SEK'),('PLN','PLN'),('TRY','TRY'),('MXN','MXN'),('BRL','BRL'),('INR','INR'),('₹','INR'),('zł','PLN'),('US$','USD'),('USD','USD'),('KHR','KHR'),('£','GBP'),('GBP','GBP'),('€','EUR'),('EUR','EUR'),('￥','JPY'),('¥','JPY'),('JPY','JPY'),('A$','AUD'),('C$','CAD'),('SGD','SGD'),('$','USD')]
     currency=next((code for symbol,code in currencies if symbol in text),fallback)
+    if currency=='USD' and '$' in text and not any(s in text for s in ['US$','USD','A$','C$','S$','MX$','R$']) and fallback in ['CAD','AUD','SGD','MXN']:currency=fallback
     raw=re.search(r'\d[\d\s.,]*',text)
     if not raw or not currency:return None,currency
     value=re.sub(r'\s+','',raw.group()).strip('.,')
@@ -163,8 +184,14 @@ def parse_product(markup,url):
             node=page.by_id(id)
             if node:
                 price=current_price(node) or (node.text() if id.startswith('priceblock') else '')
-                amount,currency=parse_price(price)
+                amount,currency=parse_price(price,(marketplace(urlparse(url).hostname) or ('','','',''))[3])
                 if amount:out.update(native_amount=amount,currency=currency,native_price=price);break
+        byline=page.by_id('bylineInfo')
+        if byline:
+            brand=clean(byline.text(),100)
+            brand=re.sub(r'^(?:Visit the|Brand:|ブランド[:：]?)\s*','',brand,flags=re.I)
+            brand=re.sub(r'\s+(?:Store|ストアを表示)$','',brand,flags=re.I)
+            out['brand']=brand
         bullets=page.by_id('feature-bullets')
         if bullets:out['description']=clean(bullets.text(),1500)
         availability=page.by_id('availability')
@@ -188,6 +215,27 @@ def parse_product(markup,url):
         if price and currency:
             out['native_amount'],out['currency']=parse_price(price,currency);out['native_price']=currency+' '+price
     if not out['title']:raise ValueError('The retailer did not return a readable product page.')
+    out['features']=[];out['specifications']={};out['options']={}
+    bullets=page.by_id('feature-bullets')
+    if bullets:out['features']=[clean(n.text(),350) for n in bullets.walk() if n.tag=='li' and n.text()][:12]
+    for table_id in ['productDetails_techSpec_section_1','productDetails_detailBullets_sections1']:
+        table=page.by_id(table_id)
+        if table:
+            for row in table.walk():
+                if row.tag!='tr':continue
+                cells=[n for n in row.children if n.tag in ['th','td']]
+                if len(cells)>=2:out['specifications'][clean(cells[0].text(),100)]=clean(cells[1].text(),300)
+    for option_id,label in [('variation_color_name','Color'),('variation_size_name','Size'),('variation_style_name','Style')]:
+        node=page.by_id(option_id)
+        if not node:continue
+        values=[]
+        for item in node.walk():
+            value=item.attrs.get('data-defaultasin') and (item.attrs.get('title') or item.text())
+            if item.tag=='option':value=item.text()
+            if value:
+                value=clean(value,100);value=re.sub(r'^(?:Click to select|Select)\s*','',value,flags=re.I)
+                if value and value.lower() not in ['select','choose','select size',label.lower()] and value not in values:values.append(value)
+        if values:out['options'][label]=values[:30]
     out['model']=out['model'] or infer_model(out['title'])
     return out
 
@@ -205,7 +253,7 @@ def parse_amazon_results(markup,domain,region,source):
         if not score:continue
         seen.add(asin)
         img=node.first(lambda n:n.tag=='img' and 's-image' in n.classes())
-        price=current_price(node);amount,currency=parse_price(price)
+        price=current_price(node);amount,currency=parse_price(price,region[3])
         star=node.first(lambda n:'a-icon-alt' in n.classes() and ('out of' in n.text() or '5つ星' in n.text()))
         rating_match=re.search(r'(\d[.,]\d)',star.text()) if star else None
         rating=float(rating_match.group(1).replace(',','.')) if rating_match else None

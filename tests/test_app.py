@@ -81,6 +81,28 @@ class FlowTests(unittest.TestCase):
             code,result=self.request('/api/search',{'query':'https://www.amazon.com/dp/B09XS7JWHH'})
             self.assertEqual(code,200);self.assertFalse(result['demo']);search.assert_called_once()
         code,_=self.request('/api/search',{'query':'https://localhost/product'});self.assertEqual(code,400)
+    def test_database_initializes_without_main_entrypoint(self):
+        temporary=Path(self.tmp.name)/('lazy-'+app.secrets.token_hex(4)+'.sqlite')
+        with patch.object(app,'DB',temporary):
+            with app.connect() as con:
+                self.assertIsNotNone(con.execute("SELECT name FROM sqlite_master WHERE name='orders'").fetchone())
+                self.assertIsNotNone(con.execute("SELECT name FROM sqlite_master WHERE name='events'").fetchone())
+    def test_product_details_refresh_updates_authoritative_quote(self):
+        catalog=self.catalog()
+        data={'search_id':catalog['search_id'],'offer_id':'0'}
+        detail={'title':'Test product','native_amount':199,'currency':'USD','native_price':'$199','availability':'In stock','options':{'Color':['Black','White']},'features':['Real feature'],'specifications':{'Model':'T-100'}}
+        with patch.object(app,'extract_product',return_value=detail):
+            code,result=self.request('/api/product',data)
+        self.assertEqual(code,200);self.assertEqual(result['product']['price_cents'],19900)
+        self.assertEqual(result['product']['options']['Color'],['Black','White'])
+        code,quote=self.request('/api/quote',data)
+        self.assertEqual(quote['item_cents'],19900)
+        code,_=self.request('/api/product',data,client=self.other);self.assertEqual(code,409)
+    def test_product_detail_failure_keeps_search_data_with_notice(self):
+        catalog=self.catalog()
+        with patch.object(app,'extract_product',side_effect=app.AppError('Blocked')):
+            code,result=self.request('/api/product',{'search_id':catalog['search_id'],'offer_id':'0'})
+        self.assertEqual(code,200);self.assertEqual(result['product']['price_cents'],24800);self.assertTrue(result['notice'])
     def test_vercel_origin_allowed_without_trusting_other_projects(self):
         host='product-search-platform-delta.vercel.app'
         with patch.dict(app.os.environ,{'VERCEL_PROJECT_PRODUCTION_URL':host},clear=True):

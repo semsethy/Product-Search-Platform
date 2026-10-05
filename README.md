@@ -10,7 +10,7 @@ Open http://localhost:5173. SQLite orders are stored in `data/linkcart.sqlite3`;
 
 ## Product search
 
-The home page starts empty. There is no sample catalog or generated comparison data. Paste a supported HTTPS retailer URL or enter a product/model name. Accessible Amazon storefronts are searched in US, Japan, UK, and Germany. Optional `SERPAPI_KEY` enables broader Google Shopping comparisons. Optional `RAINFOREST_API_KEY` supports Amazon product extraction. Retailers may block direct reads; failures and missing prices are visible and do not fall back to invented offers. USD conversions use Frankfurter reference exchange rates. Regions describe storefront/search markets, not verified warehouse origins. Similarity does not guarantee the same model, variant, or warranty.
+The home page starts empty. There is no sample catalog or generated comparison data. Paste a supported HTTPS retailer URL or enter a product/model name. All 23 registered Amazon retail storefronts are searched, including US, Japan, UK, Germany, Canada, France, India, Australia, and Singapore. Cambodia, South Korea, and Vietnam are delivery destinations rather than separate Amazon storefronts. Optional `SERPAPI_KEY` enables broader Google Shopping comparisons. Optional `RAINFOREST_API_KEY` supports Amazon product extraction. Retailers may block direct reads; failures and missing prices are visible and do not fall back to invented offers. USD conversions use Frankfurter reference exchange rates. Regions describe storefront/search markets, not verified warehouse origins. Similarity does not guarantee the same model, variant, or warranty.
 
 ## Product-image uploads (currently disabled)
 
@@ -32,7 +32,7 @@ The PayWay adapter signs hosted forms for `abapay_khqr` and `cards`; bank/card d
 
 `python3 -m unittest discover -s tests -v`
 
-25 tests cover extraction, model relevance, real currencies, provider errors, upload validation and metadata removal, visual match mapping, order durability and idempotency, access isolation, fulfillment transitions, and payment callback verification. A real Amazon link and mock card decline/success flow were also checked in the browser.
+37 tests cover extraction, model relevance, real currencies, provider errors, upload validation and metadata removal, visual match mapping, order durability and idempotency, access isolation, fulfillment transitions, and payment callback verification. A real Amazon link and mock card decline/success flow were also checked in the browser.
 
 ## Before public launch
 
@@ -43,3 +43,13 @@ This is a local test platform, not a deployed production service. Public launch 
 `BASE_URL` defaults to the project's production URL on Vercel, then the deployment URL, and localhost only outside Vercel. Origin checks also allow the exact project production, deployment, and branch domains supplied in Vercel system environment variables. They never trust arbitrary request Host headers or all `*.vercel.app` domains. For custom domains or when system environment variables are disabled, set `BASE_URL=https://your-domain` in the Vercel project settings and redeploy. For this deployment use `https://product-search-platform-delta.vercel.app`. Remove any `BASE_URL=http://localhost:5173` value from Vercel. The URL also controls payment callbacks and Secure cookies.
 
 Amazon Japan share links (`amzn.asia`) and Amazon US share links (`a.co`) are resolved to their original product pages before extraction. A missing Amazon detail title or redirect to another ASIN fails explicitly, rather than treating a generic/challenge page as the original product. New searches clear earlier listings so a failure cannot display a previous product. Amazon may block requests from cloud servers; readable local responses do not guarantee Vercel availability.
+
+## Worldwide comparisons and details
+
+`amazon_regions.py` defines 23 marketplace domains and currencies. All are accepted as product-link sources and attempted during comparisons. Regional availability is reported individually. Where accessible, category searches complement exact-model searches to find alternatives. Similar products are labeled separately from matching models, and filters distinguish them. Blocked regions have Amazon search links for manual browsing; these links are not price offers. Coverage does not guarantee Amazon delivers to Cambodia.
+
+Opening a result requests its product details: features, specifications, and color/size/style options when the retailer exposes them. Options are suggestions, not per-variant stock or price guarantees. The server refreshes the selected offer and authoritative quote. Product names, details, prices, and options remain real; no generated results are used to populate missing regions. Mock checkout accepts real priced listings and retains explicit test labels; real payments remain disabled.
+
+The default remains free direct page reads. Optional `RAINFOREST_API_KEY` also supports regional Amazon search (not only extraction); credentials are needed only to enable that provider. It has fixture-based tests but has not been live-tested. Each provider query can consume credits; regional searches may make up to 23 queries per comparison. No paid provider requests occur when the key is absent.
+
+On Vercel, mock orders use temporary `/tmp` SQLite storage and initialize without running the local server entry point. This fixes test-order endpoints on read-only serverless filesystems, but test orders can disappear on cold starts and are not shared across instances. Persistent production orders need an external database; in-memory search quotes can also expire when a serverless instance changes. This deployment is for mock flow testing only.

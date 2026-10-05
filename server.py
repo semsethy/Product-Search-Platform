@@ -8,7 +8,8 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, urlencode, urljoin
 from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler
-from product_search import parse_product, parse_amazon_results, search_query, canonical, asin_from_url, relevance, parse_price
+from amazon_regions import REGIONS, AMAZON_DOMAINS, marketplace
+from product_search import parse_product, parse_amazon_results, search_query, canonical, asin_from_url, relevance, parse_price, alternative_query
 
 ROOT = Path(__file__).resolve().parent
 for line in (ROOT / '.env').read_text().splitlines() if (ROOT / '.env').exists() else []:
@@ -35,7 +36,7 @@ def configured_base_url(environ, port):
     return f'http://localhost:{port}'
 
 BASE_URL = configured_base_url(os.environ, PORT)
-DB = Path(os.environ.get('DATABASE_PATH', str(ROOT / 'data' / 'linkcart.sqlite3')))
+DB = Path(os.environ.get('DATABASE_PATH', '/tmp/linkcart-test.sqlite3' if os.environ.get('VERCEL') and os.environ.get('PAYMENT_MODE','mock')=='mock' else str(ROOT / 'data' / 'linkcart.sqlite3')))
 ADMIN_TOKEN = os.environ.get('ADMIN_TOKEN', '')
 SERP_KEY = os.environ.get('SERPAPI_KEY', '')
 RAINFOREST_KEY = os.environ.get('RAINFOREST_API_KEY', '')
@@ -52,8 +53,8 @@ PRICING_READY = bool(os.environ.get('SERVICE_FEE_RATE') and os.environ.get('SHIP
 SERVICE_RATE = Decimal(os.environ.get('SERVICE_FEE_RATE', '0.08'))
 SHIPPING = Decimal(os.environ.get('SHIPPING_USD', '12.00'))
 STATES = ['pending_payment', 'paid', 'purchased', 'shipped', 'delivered']
-REGIONS = [('us', 'United States', '🇺🇸', 'USD'), ('jp', 'Japan', '🇯🇵', 'JPY'), ('gb', 'United Kingdom', '🇬🇧', 'GBP'), ('de', 'Germany', '🇩🇪', 'EUR')]
 ALLOWED_STORES = ['amazon.com', 'amazon.co.jp', 'amazon.co.uk', 'amazon.de', 'amazon.sg', 'amazon.in', 'amazon.com.au', 'ebay.com', 'ebay.co.uk', 'rakuten.co.jp', 'walmart.com', 'bestbuy.com', 'sony.com', 'sony.co.jp', 'nike.com', 'adidas.com', 'newbalance.com', 'newbalance.jp', 'uniqlo.com', 'mercari.com', 'zozo.jp', 'amazon.ca', 'amazon.fr', 'amazon.it', 'amazon.es', 'amazon.nl', 'amazon.ae', 'amzn.to', 'amzn.asia', 'amazon.jp', 'a.co', 'target.com', 'bhphotovideo.com', 'adorama.com', 'etsy.com', 'newegg.com', 'apple.com', 'sony.co.uk', 'sony.jp']
+ALLOWED_STORES = list(dict.fromkeys(ALLOWED_STORES + list(AMAZON_DOMAINS.values())))
 CACHE_LOCK = threading.Lock()
 SEARCHES = {}
 RATE_BUCKETS = collections.defaultdict(collections.deque)
@@ -67,14 +68,15 @@ def money(value):
 def now(): return datetime.now(timezone.utc).isoformat()
 
 def connect():
+    DB.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB, timeout=10)
     con.row_factory = sqlite3.Row
+    if not con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='orders'").fetchone():
+        initialize_schema(con)
     return con
 
-def init_db():
-    DB.parent.mkdir(parents=True, exist_ok=True)
-    with connect() as con:
-        con.executescript('''PRAGMA journal_mode=WAL;
+def initialize_schema(con):
+    con.executescript('''PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS orders (
           id TEXT PRIMARY KEY, session TEXT NOT NULL, idempotency TEXT NOT NULL,
           created_at TEXT NOT NULL, updated_at TEXT NOT NULL, status TEXT NOT NULL,
@@ -85,6 +87,10 @@ def init_db():
           UNIQUE(session,idempotency));
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,order_id TEXT NOT NULL,created_at TEXT NOT NULL,action TEXT NOT NULL);
         ''')
+
+def init_db():
+    with connect() as con:
+        initialize_schema(con)
 
 def allowed_url(url):
     p = urlparse(url)
@@ -156,13 +162,16 @@ def extract_product(url):
     host=urlparse(url).hostname.lower();asin=asin_from_url(url)
     if host in ['amzn.asia','amzn.to','a.co','amazon.jp','www.amazon.jp']:
         try:
-            _,resolved=retailer_html(url)
+            shared_markup,resolved=retailer_html(url)
             resolved_host=(urlparse(resolved).hostname or '').lower()
             if not asin_from_url(resolved) or not any(resolved_host==d or resolved_host.endswith('.'+d) for d in ALLOWED_STORES if d.startswith('amazon.')):
                 raise ValueError('Short link did not resolve to an Amazon product.')
         except Exception:
             raise AppError('The Amazon share link could not be resolved. Copy the full product-page URL from your browser.',422)
-        # Read the canonical detail page rather than a share/referral or challenge page.
+        if not RAINFOREST_KEY:
+            try:return parse_product(shared_markup,resolved)
+            except ValueError:pass
+        # Retry the canonical detail page if the share page is a challenge.
         return extract_product(canonical(resolved))
     if 'amazon.' in host and asin and RAINFOREST_KEY:
         try:
@@ -173,7 +182,7 @@ def extract_product(url):
         except Exception: pass
     # Request the regional currency explicitly; always parse the returned currency.
     if 'amazon.' in host and asin:
-        curr=next((r[3] for r in REGIONS if AMAZON_DOMAINS[r[0]] in host),'USD')
+        curr=(marketplace(host) or ('','','','USD'))[3]
         url=canonical(url)+'?'+urlencode({'language':'en_US','currency':curr})
     try:
         markup,final_url=retailer_html(url)
@@ -185,7 +194,7 @@ def extract_product(url):
 
 def shopping_region(query, region):
     code, name, flag, currency = region
-    data = json_request('https://serpapi.com/search.json?' + urlencode({'api_key':SERP_KEY,'engine':'google_shopping','q':query,'gl':code,'google_domain':{'us':'google.com','jp':'google.co.jp','gb':'google.co.uk','de':'google.de'}[code],'hl':'en','num':8}))
+    data = json_request('https://serpapi.com/search.json?' + urlencode({'api_key':SERP_KEY,'engine':'google_shopping','q':query,'gl':code,'google_domain':'google.com','hl':'en','num':8}))
     if data.get('error'): raise AppError('Product search provider could not complete this region.',502)
     results=[]
     for p in data.get('shopping_results',[])[:8]:
@@ -197,7 +206,6 @@ def shopping_region(query, region):
     return results
 
 REGIONAL_CACHE={}
-AMAZON_DOMAINS={'us':'amazon.com','jp':'amazon.co.jp','gb':'amazon.co.uk','de':'amazon.de'}
 
 def source_offer(product):
     host=urlparse(product['url']).hostname
@@ -205,7 +213,22 @@ def source_offer(product):
     region=region or ('other','Other stores','🌐',product.get('currency',''))
     return {**product,'merchant':'Amazon '+region[1] if 'amazon.' in host else host.removeprefix('www.'),'region_code':region[0],'region':region[1],'flag':region[2],'rating':None,'reviews':None,'variant':'Verify exact color / size','condition':'Verify condition','match':'original product','demo':False,'art':'','color':'','tone':'sage','checkout_available':False,'source_kind':'Original product page','verified_at':now()}
 
+def rainforest_region(product,region):
+    domain=AMAZON_DOMAINS[region[0]]
+    result=json_request('https://api.rainforestapi.com/request?'+urlencode({'api_key':RAINFOREST_KEY,'type':'search','amazon_domain':domain,'search_term':search_query(product),'number_of_results':12}),timeout=25)
+    if result.get('request_info',{}).get('success') is False: raise AppError('Amazon data provider could not search this marketplace.',502)
+    offers=[]
+    for item in result.get('search_results',[]):
+        score=relevance(item.get('title',''),product)
+        asin=item.get('asin','')
+        if not score or not re.fullmatch(r'[A-Z0-9]{10}',asin):continue
+        price=item.get('price') or {}
+        amount,curr=parse_price(str(price.get('raw') or price.get('value') or ''),price.get('currency') or region[3])
+        offers.append({'title':item['title'],'url':'https://www.'+domain+'/dp/'+asin,'asin':asin,'image':item.get('image',''),'native_amount':amount,'native_price':str(price.get('raw','')),'currency':curr,'merchant':'Amazon '+region[1],'region_code':region[0],'region':region[1],'flag':region[2],'match':'model match' if score==2 else 'similar listing','availability':'Not confirmed','rating':item.get('rating'),'reviews':item.get('ratings_total'),'condition':'Verify condition','variant':'Verify exact color / size','tone':'sage','demo':False,'description':'Amazon product search result. Open details to load specifications and options.','source_kind':'Amazon search API','extraction':'Amazon search API','verified_at':now(),'checkout_available':False})
+    return offers[:12]
+
 def direct_amazon_region(product,region):
+    if RAINFOREST_KEY:return rainforest_region(product,region)
     domain=AMAZON_DOMAINS[region[0]]
     cache_key=(search_query(product).lower(),region[0])
     with CACHE_LOCK:
@@ -214,6 +237,16 @@ def direct_amazon_region(product,region):
     url='https://www.'+domain+'/s?'+urlencode({'k':search_query(product),'language':'en_US','currency':region[3]})
     markup,_=retailer_html(url)
     offers=parse_amazon_results(markup,domain,region,product)
+    broader=alternative_query(product)
+    if broader and broader.lower()!=search_query(product).lower() and len(offers)<4:
+        try:
+            broad_url='https://www.'+domain+'/s?'+urlencode({'k':broader,'language':'en_US','currency':region[3]})
+            broad_markup,_=retailer_html(broad_url)
+            alternatives=parse_amazon_results(broad_markup,domain,region,product)
+            found={o['url'] for o in offers}
+            offers.extend(o for o in alternatives if o['url'] not in found)
+        except Exception:pass
+    offers=offers[:12]
     for offer in offers:offer['verified_at']=now()
     with CACHE_LOCK:
         for key in list(REGIONAL_CACHE):
@@ -254,17 +287,19 @@ def live_search(query):
     is_url=query.startswith(('http://','https://'))
     product=extract_product(query) if is_url else {'title':query,'model':'','brand':'','url':'','extraction':'Product name search'}
     offers=[source_offer(product)] if is_url else []
-    warnings=[];target_query=search_query(product)
+    warnings=[];coverage=[];target_query=search_query(product)
     if not target_query:raise AppError('Could not identify a product name from that link.',422)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
         tasks={pool.submit(shopping_region,target_query,r) if SERP_KEY else pool.submit(direct_amazon_region,product,r):r for r in REGIONS}
         for task in concurrent.futures.as_completed(tasks):
             region=tasks[task]
             try:
                 result=task.result()
+                coverage.append({'code':region[0],'name':region[1],'flag':region[2],'status':'results' if result else 'no_matches','count':len(result) if isinstance(result,list) else int(bool(result)),'url':'https://www.'+AMAZON_DOMAINS[region[0]]+'/s?'+urlencode({'k':target_query})})
                 if isinstance(result,list):offers.extend(result)
                 elif result:offers.append(result)
             except Exception:
+                coverage.append({'code':region[0],'name':region[1],'flag':region[2],'status':'unavailable','count':0,'url':'https://www.'+AMAZON_DOMAINS[region[0]]+'/s?'+urlencode({'k':target_query})})
                 warning=region[1]+' search/page could not be read; this region may be incomplete.'
                 if warning not in warnings:warnings.append(warning)
     # Deduplicate by canonical URL, prefer directly read product pages over search results.
@@ -282,7 +317,7 @@ def live_search(query):
         candidate=next((o for o in offers if o.get('region_code')==region[0] and o.get('extraction')=='Amazon search result' and o.get('match')=='model match'),None)
         if candidate:to_verify.append(candidate)
     if to_verify:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
             futures={pool.submit(extract_product,o['url']):o for o in to_verify}
             for task in concurrent.futures.as_completed(futures):
                 offer=futures[task]
@@ -296,7 +331,9 @@ def live_search(query):
     if not offers and warnings:raise AppError('Search providers and retailer pages are unavailable right now. Please try later or connect a product-data API.',502)
     offers.sort(key=lambda o:(o.get('match')!='original product',o.get('region_code',''),o.get('native_amount') is None))
     offers=convert_offers(offers,warnings)
-    return {'title':product['title'],'extracted':product,'offers':offers,'demo':False,'query':target_query,'provider':'SerpApi shopping search' if SERP_KEY else 'Direct Amazon regional search','message':'Real retailer listings. A model match is not a guarantee of the same variant. Stock is confirmed only when the product page states it; region means storefront/search market, not warehouse origin.','warnings':warnings}
+    if len({o['region_code'] for o in offers})<2:
+        warnings.insert(0,'Cross-region comparison is incomplete. Only readable listings are shown. Connect an Amazon product-data provider for dependable regional results.')
+    return {'title':product['title'],'extracted':product,'offers':offers,'demo':False,'query':target_query,'provider':'SerpApi shopping search' if SERP_KEY else 'Direct Amazon regional search','message':'Real retailer listings. A model match is not a guarantee of the same variant. Stock is confirmed only when the product page states it; region means storefront/search market, not warehouse origin.','warnings':warnings,'regions':coverage}
 
 def normalized_image(data):
     from PIL import Image, ImageOps
@@ -458,7 +495,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             session=self.session(); path=urlparse(self.path).path
-            if path=='/api/config': return self.send(200,{'demo':False,'search_provider':'api' if SERP_KEY else 'direct_amazon','demo_enabled':DEMO_ENABLED,'payment_mode':PAYMENT_MODE,'image_search_ready':False,'payway_ready':PAYWAY_READY,'payway_env':PAYWAY_MODE,'live_checkout_enabled':bool(ALLOW_LIVE_CHECKOUT and PAYWAY_READY and PRICING_READY and PAYMENT_MODE==PAYWAY_MODE),'service_rate':float(SERVICE_RATE),'shipping_cents':money(SHIPPING)})
+            if path=='/api/config': return self.send(200,{'demo':False,'search_provider':'api' if SERP_KEY else 'direct_amazon','demo_enabled':DEMO_ENABLED,'payment_mode':PAYMENT_MODE,'image_search_ready':False,'regions':[{'code':r[0],'name':r[1],'flag':r[2]} for r in REGIONS],'payway_ready':PAYWAY_READY,'payway_env':PAYWAY_MODE,'live_checkout_enabled':bool(ALLOW_LIVE_CHECKOUT and PAYWAY_READY and PRICING_READY and PAYMENT_MODE==PAYWAY_MODE),'service_rate':float(SERVICE_RATE),'shipping_cents':money(SHIPPING)})
             if path=='/api/catalog':
                 return self.send(200,{'title':'Find your product','offers':[],'demo':False,'search_id':'','warnings':[]})
             if path=='/api/orders':
@@ -502,6 +539,20 @@ class Handler(BaseHTTPRequestHandler):
                 if data.get('demo') is True: raise AppError('Sample product comparisons have been removed.',410)
                 result=live_search(query)
                 return self.send(200,cache_search(result,session))
+            if path=='/api/product':
+                self.limited('product',20)
+                offer=selected_offer(data,session)
+                if not offer.get('details_loaded'):
+                    try:
+                        detail=extract_product(offer['url'])
+                        if offer.get('asin') and detail.get('asin')!=offer['asin']: raise ValueError()
+                        merged={**offer,**{k:detail[k] for k in ['title','description','image','model','brand','features','specifications','options','availability','native_amount','native_price','currency'] if detail.get(k) not in [None,'',[],{}]}}
+                        merged['details_loaded']=True;merged['verified_at']=now()
+                        convert_offers([merged],[]);merged['id']=offer['id']
+                        with CACHE_LOCK: offer.update(merged)
+                    except Exception:
+                        return self.send(200,{'product':offer,'notice':'The retailer blocked detailed information. These are search-page details; verify the variant at the retailer.'})
+                return self.send(200,{'product':offer,'notice':''})
             if path=='/api/quote':
                 offer=selected_offer(data,session); qty=data.get('quantity',1)
                 if type(qty)!=int or qty<1 or qty>5: raise AppError('Choose a quantity between 1 and 5.')
