@@ -81,6 +81,24 @@ class FlowTests(unittest.TestCase):
             code,result=self.request('/api/search',{'query':'https://www.amazon.com/dp/B09XS7JWHH'})
             self.assertEqual(code,200);self.assertFalse(result['demo']);search.assert_called_once()
         code,_=self.request('/api/search',{'query':'https://localhost/product'});self.assertEqual(code,400)
+    def test_vercel_origin_allowed_without_trusting_other_projects(self):
+        host='product-search-platform-delta.vercel.app'
+        with patch.dict(app.os.environ,{'VERCEL_PROJECT_PRODUCTION_URL':host},clear=True):
+            code,_=self.request('/api/search',{'query':''},headers={'Origin':'https://'+host})
+            self.assertEqual(code,400)  # reaches input validation, not origin rejection
+            code,_=self.request('/api/search',{'query':''},headers={'Origin':'https://another-project.vercel.app'})
+            self.assertEqual(code,403)
+            code,_=self.request('/api/search',{'query':''},headers={'Origin':'https://'+host+'.evil.com'})
+            self.assertEqual(code,403)
+            code,_=self.request('/api/search',{'query':''},headers={'Origin':'https://'+host,'Sec-Fetch-Site':'cross-site'})
+            self.assertEqual(code,403)
+    def test_base_url_defaults_for_local_and_vercel(self):
+        self.assertEqual(app.configured_base_url({},5173),'http://localhost:5173')
+        env={'VERCEL_PROJECT_PRODUCTION_URL':'product-search-platform-delta.vercel.app','VERCEL_URL':'preview.vercel.app'}
+        self.assertEqual(app.configured_base_url(env,5173),'https://product-search-platform-delta.vercel.app')
+        self.assertEqual(app.deployment_origins(env),{'https://product-search-platform-delta.vercel.app','https://preview.vercel.app'})
+        self.assertEqual(app.configured_base_url(dict(env,BASE_URL='https://custom.example/'),5173),'https://custom.example')
+        self.assertEqual(app.deployment_origins({'VERCEL_URL':'evil.com/path'}),set())
     def test_url_validation(self):
         for url in ['http://amazon.com/x','https://amazon.com.evil.com/x','https://amazon.com:8000/x','https://user:password@amazon.com/x','https://127.0.0.1/x']:
             with self.assertRaises(app.AppError):app.allowed_url(url)

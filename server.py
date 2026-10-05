@@ -16,7 +16,25 @@ for line in (ROOT / '.env').read_text().splitlines() if (ROOT / '.env').exists()
         k, v = line.split('=', 1)
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 PORT = int(os.environ.get('PORT', '5173'))
-BASE_URL = os.environ.get('BASE_URL', f'http://localhost:{PORT}').rstrip('/')
+def deployment_origins(environ):
+    # Trust only platform-provided project URLs, never client Host/Origin headers.
+    origins=set()
+    for key in ['VERCEL_PROJECT_PRODUCTION_URL','VERCEL_URL','VERCEL_BRANCH_URL']:
+        host=environ.get(key,'').strip()
+        if host and re.fullmatch(r'[a-zA-Z0-9.-]+',host):
+            origins.add('https://'+host.lower())
+    return origins
+
+def configured_base_url(environ, port):
+    explicit=environ.get('BASE_URL','').strip().rstrip('/')
+    if explicit: return explicit
+    for key in ['VERCEL_PROJECT_PRODUCTION_URL','VERCEL_URL']:
+        host=environ.get(key,'').strip()
+        candidate='https://'+host.lower()
+        if candidate in deployment_origins(environ): return candidate
+    return f'http://localhost:{port}'
+
+BASE_URL = configured_base_url(os.environ, PORT)
 DB = Path(os.environ.get('DATABASE_PATH', str(ROOT / 'data' / 'linkcart.sqlite3')))
 ADMIN_TOKEN = os.environ.get('ADMIN_TOKEN', '')
 SERP_KEY = os.environ.get('SERPAPI_KEY', '')
@@ -406,7 +424,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError,UnicodeDecodeError): raise AppError('Invalid JSON request.')
     def check_origin(self):
         origin=self.headers.get('Origin')
-        if origin and origin!=BASE_URL: raise AppError('Request origin is not allowed.',403)
+        if origin and origin not in ({BASE_URL} | deployment_origins(os.environ)): raise AppError('Request origin is not allowed.',403)
         if self.headers.get('Sec-Fetch-Site')=='cross-site': raise AppError('Cross-site requests are not allowed.',403)
     def staff(self):
         value=self.headers.get('Authorization','').removeprefix('Bearer ')

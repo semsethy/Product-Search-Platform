@@ -37,3 +37,7 @@ The PayWay adapter signs hosted forms for `abapay_khqr` and `cards`; bank/card d
 ## Before public launch
 
 This is a local test platform, not a deployed production service. Public launch requires TLS hosting with a production application server, individual staff/customer authentication and recovery, encrypted backups and retention rules, distributed rate limits and outbound egress controls, provider sandbox approval, scheduled payment reconciliation, customer notifications, merchant-approved refund/privacy/service policies, accurate delivery/customs pricing, and final variant/stock/price verification. Python `http.server` is for local testing. Live visual search depends on SerpApi credentials, and reliable retailer coverage requires approved product-data providers.
+
+## Vercel request-origin configuration
+
+`BASE_URL` defaults to the project's production URL on Vercel, then the deployment URL, and localhost only outside Vercel. Origin checks also allow the exact project production, deployment, and branch domains supplied in Vercel system environment variables. They never trust arbitrary request Host headers or all `*.vercel.app` domains. For custom domains or when system environment variables are disabled, set `BASE_URL=https://your-domain` in the Vercel project settings and redeploy. For this deployment use `https://product-search-platform-delta.vercel.app`. Remove any `BASE_URL=http://localhost:5173` value from Vercel. The URL also controls payment callbacks and Secure cookies.
