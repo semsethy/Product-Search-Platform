@@ -33,6 +33,20 @@ class SearchTests(unittest.TestCase):
     def test_challenge_page_is_not_a_product(self):
         for markup in ['<title>Robot Check</title>','<title>Just a moment...</title>','<title>&nbsp;</title>']:
             with self.assertRaises(ValueError):parse_product(markup,PRODUCT['url'])
+    def test_japan_shared_link_and_mobile_asin(self):
+        from product_search import asin_from_url
+        self.assertEqual(server.allowed_url('https://amzn.asia/d/example'),'https://amzn.asia/d/example')
+        self.assertEqual(asin_from_url('https://www.amazon.co.jp/gp/aw/d/B09XS7JWHH?ref=test'),'B09XS7JWHH')
+        with patch.object(server,'retailer_html',return_value=(AMAZON,'https://www.amazon.co.jp/dp/B09XS7JWHH')):
+            product=server.extract_product('https://amzn.asia/d/example')
+        self.assertEqual(product['asin'],'B09XS7JWHH');self.assertIn('WH-1000XM5',product['title'])
+    def test_amazon_home_or_search_page_cannot_be_original_product(self):
+        for markup in ['<title>Amazon.co.jp: shopping and deals</title>', '<title>Headphones - Amazon</title><h2>Another recommended product</h2>']:
+            with self.assertRaises(ValueError):parse_product(markup,PRODUCT['url'])
+        with self.assertRaises(ValueError):parse_product(AMAZON,'https://www.amazon.co.jp/s?k=headphones')
+    def test_redirect_cannot_replace_requested_product(self):
+        with patch.object(server,'retailer_html',return_value=(AMAZON,'https://www.amazon.com/dp/B000000000')):
+            with self.assertRaises(server.AppError):server.extract_product(PRODUCT['url'])
     def test_search_uses_product_heading_and_filters_accessories(self):
         result=parse_amazon_results(RESULTS,'amazon.com',server.REGIONS[0],PRODUCT)
         self.assertEqual(len(result),2);self.assertEqual(result[0]['title'],'Sony WH-1000XM5 Wireless Headphones')

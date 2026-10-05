@@ -107,7 +107,7 @@ def search_query(product):
     model=str(product.get('model') or infer_model(product.get('title',''))).split('/')[0]
     title=product.get('title','')
     if model:
-        brand=product.get('brand','') or (title.split()[0] if title else '')
+        brand=product.get('brand','') or ('New Balance' if title.lower().startswith('new balance ') else (title.split()[0] if title else ''))
         return ' '.join(dict.fromkeys([brand,model])).strip()
     title=re.sub(r'\s*[:|]\s*(?:Amazon|eBay|Walmart).*$', '',title,flags=re.I)
     return ' '.join(title.split()[:10])
@@ -173,6 +173,8 @@ def parse_product(markup,url):
             if any(w in text for w in ['currently unavailable','out of stock','derzeit nicht verfügbar','一時的に在庫切れ']):out['availability']='Out of stock'
             elif any(w in text for w in ['in stock','auf lager','在庫あり']):out['availability']='In stock'
         if title and title.text():out['extraction']='Amazon product page'
+    if 'amazon.' in (urlparse(url).hostname or '') and (not asin or out['extraction']!='Amazon product page'):
+        raise ValueError('Amazon did not return the requested product detail page.')
     if not out['title']:
         title=page.meta.get('og:title','');doc_title=page.root.first(lambda n:n.tag=='title')
         if not title and doc_title:title=doc_title.text()

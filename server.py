@@ -53,7 +53,7 @@ SERVICE_RATE = Decimal(os.environ.get('SERVICE_FEE_RATE', '0.08'))
 SHIPPING = Decimal(os.environ.get('SHIPPING_USD', '12.00'))
 STATES = ['pending_payment', 'paid', 'purchased', 'shipped', 'delivered']
 REGIONS = [('us', 'United States', '🇺🇸', 'USD'), ('jp', 'Japan', '🇯🇵', 'JPY'), ('gb', 'United Kingdom', '🇬🇧', 'GBP'), ('de', 'Germany', '🇩🇪', 'EUR')]
-ALLOWED_STORES = ['amazon.com', 'amazon.co.jp', 'amazon.co.uk', 'amazon.de', 'amazon.sg', 'amazon.in', 'amazon.com.au', 'ebay.com', 'ebay.co.uk', 'rakuten.co.jp', 'walmart.com', 'bestbuy.com', 'sony.com', 'sony.co.jp', 'nike.com', 'adidas.com', 'newbalance.com', 'newbalance.jp', 'uniqlo.com', 'mercari.com', 'zozo.jp', 'amazon.ca', 'amazon.fr', 'amazon.it', 'amazon.es', 'amazon.nl', 'amazon.ae', 'amzn.to', 'a.co', 'target.com', 'bhphotovideo.com', 'adorama.com', 'etsy.com', 'newegg.com', 'apple.com', 'sony.co.uk', 'sony.jp']
+ALLOWED_STORES = ['amazon.com', 'amazon.co.jp', 'amazon.co.uk', 'amazon.de', 'amazon.sg', 'amazon.in', 'amazon.com.au', 'ebay.com', 'ebay.co.uk', 'rakuten.co.jp', 'walmart.com', 'bestbuy.com', 'sony.com', 'sony.co.jp', 'nike.com', 'adidas.com', 'newbalance.com', 'newbalance.jp', 'uniqlo.com', 'mercari.com', 'zozo.jp', 'amazon.ca', 'amazon.fr', 'amazon.it', 'amazon.es', 'amazon.nl', 'amazon.ae', 'amzn.to', 'amzn.asia', 'amazon.jp', 'a.co', 'target.com', 'bhphotovideo.com', 'adorama.com', 'etsy.com', 'newegg.com', 'apple.com', 'sony.co.uk', 'sony.jp']
 CACHE_LOCK = threading.Lock()
 SEARCHES = {}
 RATE_BUCKETS = collections.defaultdict(collections.deque)
@@ -154,6 +154,16 @@ def retailer_html(url):
 def extract_product(url):
     allowed_url(url)
     host=urlparse(url).hostname.lower();asin=asin_from_url(url)
+    if host in ['amzn.asia','amzn.to','a.co','amazon.jp','www.amazon.jp']:
+        try:
+            _,resolved=retailer_html(url)
+            resolved_host=(urlparse(resolved).hostname or '').lower()
+            if not asin_from_url(resolved) or not any(resolved_host==d or resolved_host.endswith('.'+d) for d in ALLOWED_STORES if d.startswith('amazon.')):
+                raise ValueError('Short link did not resolve to an Amazon product.')
+        except Exception:
+            raise AppError('The Amazon share link could not be resolved. Copy the full product-page URL from your browser.',422)
+        # Read the canonical detail page rather than a share/referral or challenge page.
+        return extract_product(canonical(resolved))
     if 'amazon.' in host and asin and RAINFOREST_KEY:
         try:
             data=json_request('https://api.rainforestapi.com/request?'+urlencode({'api_key':RAINFOREST_KEY,'type':'product','amazon_domain':host.removeprefix('www.'),'asin':asin}))
@@ -167,6 +177,8 @@ def extract_product(url):
         url=canonical(url)+'?'+urlencode({'language':'en_US','currency':curr})
     try:
         markup,final_url=retailer_html(url)
+        resolved_asin=asin_from_url(final_url)
+        if asin and resolved_asin != asin: raise ValueError('Retailer redirected to a different product.')
         return parse_product(markup,final_url)
     except Exception:
         raise AppError('The retailer did not return readable product content. Try the full product URL instead of a short link, or enter its exact name/model. Some stores require a product-data API.',422)
